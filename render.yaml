@@ -8,3 +8,6 @@ services:
     envVars:
       - key: BOT_TOKEN
         value: 8033779980:AAECGMj1LKfMoL6ucso9tFYgB7TyHXcXm6E
+      - key: WEBHOOK_URL
+        fromGroup:
+          name: https://telegram-bot-dmvu.onrender.com
