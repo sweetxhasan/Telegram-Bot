@@ -8,8 +8,8 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 import random
 import html as html_escape
 import uuid
-from threading import Thread
-from flask import Flask
+import asyncio
+from aiohttp import web
 
 # Configure logging
 logging.basicConfig(
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 # Bot configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN', "8033779980:AAECGMj1LKfMoL6ucso9tFYgB7TyHXcXm6E")
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
+WEB_PORT = int(os.environ.get('PORT', 5000))
 SCRAPINGBEE_API_URL = "https://app.scrapingbee.com/api/v1/"
 
 # Data storage files - use absolute paths for Render
@@ -31,20 +33,6 @@ API_REQUESTS_FILE = "data/api_requests_data.json"
 
 # Create data directory if it doesn't exist
 os.makedirs("data", exist_ok=True)
-
-# Flask app for health checks
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-@app.route('/health')
-def health():
-    return "OK"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=5000)
 
 class BotDataManager:
     def __init__(self):
@@ -182,6 +170,9 @@ data_manager = BotDataManager()
 
 # User states for conversation handling
 USER_STATES = {}
+
+# Global application instance
+application = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -630,13 +621,31 @@ async def show_admin_dashboard_from_message(update: Update):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(dashboard_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-def main():
-    # Start Flask server in a separate thread for health checks
-    flask_thread = Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+async def health_check(request):
+    return web.Response(text="Bot is running!")
+
+async def set_webhook():
+    """Set webhook for Telegram bot"""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to: {webhook_url}")
+
+async def handle_webhook(request):
+    """Handle incoming webhook updates"""
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return web.Response(text="Error", status=500)
+
+async def start_bot():
+    """Start the bot with webhook or polling"""
+    global application
     
-    # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
@@ -644,9 +653,28 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    if WEBHOOK_URL:
+        # Webhook mode for production
+        await set_webhook()
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_post('/webhook', handle_webhook)
+        return app
+    else:
+        # Polling mode for development
+        await application.run_polling()
+        return None
+
+def main():
     # Start the bot
-    print("Bot is running...")
-    application.run_polling()
+    if WEBHOOK_URL:
+        # Production with webhook
+        app = asyncio.run(start_bot())
+        if app:
+            web.run_app(app, host='0.0.0.0', port=WEB_PORT)
+    else:
+        # Development with polling
+        asyncio.run(start_bot())
 
 if __name__ == "__main__":
     main()
